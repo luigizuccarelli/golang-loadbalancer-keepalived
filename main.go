@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
@@ -163,7 +166,7 @@ func main() {
 	var serverList string
 	var port int
 	flag.StringVar(&serverList, "backends", "", "Load balanced backends, use commas to separate")
-	flag.IntVar(&port, "port", 3030, "Port to serve")
+	flag.IntVar(&port, "port", 7443, "Port to serve")
 	flag.Parse()
 
 	if len(serverList) == 0 {
@@ -211,15 +214,42 @@ func main() {
 
 	// create http server
 	server := http.Server{
-		Addr:    fmt.Sprintf(":%d", port),
-		Handler: http.HandlerFunc(lb),
+		Addr:      fmt.Sprintf(":%d", port),
+		Handler:   http.HandlerFunc(lb),
+		TLSConfig: getTLSConfig("localhost", "certs/UnikernelCA.crt", tls.ClientAuthType(4)),
 	}
 
 	// start health checking
 	go healthCheck()
 
 	log.Printf("Load Balancer started at :%d\n", port)
-	if err := server.ListenAndServe(); err != nil {
+	if err := server.ListenAndServeTLS("certs/localhost.crt", "certs/localhost.key"); err != nil {
 		log.Fatal(err)
+	}
+}
+
+func getTLSConfig(host, caCertFile string, certOpt tls.ClientAuthType) *tls.Config {
+	var caCert []byte
+	var err error
+	var caCertPool *x509.CertPool
+	if certOpt > tls.RequestClientCert {
+		caCert, err = ioutil.ReadFile(caCertFile)
+		if err != nil {
+			log.Fatal("Error opening cert file", caCertFile, ", error ", err)
+		}
+		caCertPool = x509.NewCertPool()
+		caCertPool.AppendCertsFromPEM(caCert)
+	}
+
+	return &tls.Config{
+		ServerName: host,
+		// ClientAuth: tls.NoClientCert,				// Client certificate will not be requested and it is not required
+		// ClientAuth: tls.RequestClientCert,			// Client certificate will be requested, but it is not required
+		// ClientAuth: tls.RequireAnyClientCert,		// Client certificate is required, but any client certificate is acceptable
+		// ClientAuth: tls.VerifyClientCertIfGiven,		// Client certificate will be requested and if present must be in the server's Certificate Pool
+		// ClientAuth: tls.RequireAndVerifyClientCert,	// Client certificate will be required and must be present in the server's Certificate Pool
+		ClientAuth: certOpt,
+		ClientCAs:  caCertPool,
+		MinVersion: tls.VersionTLS12, // TLS versions below 1.2 are considered insecure - see https://www.rfc-editor.org/rfc/rfc7525.txt for details
 	}
 }
